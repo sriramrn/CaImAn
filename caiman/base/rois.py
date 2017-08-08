@@ -422,19 +422,27 @@ def nf_masks_to_json(binary_masks,json_filename):
 
 
 def nf_read_roi(fileobj):
-    """
+    '''
     points = read_roi(fileobj)
-
     Read ImageJ's ROI format
     
     Addapted from https://gist.github.com/luispedro/3437255
-    Copyright: Luis Pedro Coelho <luis@luispedro.org>, 2012
-     License: MIT
-     This is based on:
-         http://rsbweb.nih.gov/ij/developer/source/ij/io/RoiDecoder.java.html
-         http://rsbweb.nih.gov/ij/developer/source/ij/io/RoiEncoder.java.html
-    """
+    '''
+# This is based on:
+# http://rsbweb.nih.gov/ij/developer/source/ij/io/RoiDecoder.java.html
+# http://rsbweb.nih.gov/ij/developer/source/ij/io/RoiEncoder.java.html
+
+
+    SPLINE_FIT = 1
+    DOUBLE_HEADED = 2
+    OUTLINE = 4
+    OVERLAY_LABELS = 8
+    OVERLAY_NAMES = 16
+    OVERLAY_BACKGROUNDS = 32
+    OVERLAY_BOLD = 64
     SUB_PIXEL_RESOLUTION = 128
+    DRAW_OFFSET = 256
+
 
     pos = [4]
     def get8():
@@ -461,17 +469,44 @@ def nf_read_roi(fileobj):
     magic = fileobj.read(4)
     if magic != 'Iout':
         raise IOError('Magic number not found')
+    version = get16()
 
     # It seems that the roi type field occupies 2 Bytes, but only one is used
+
+    roi_type = get8()
+    # Discard second Byte:
     get8()
+
+#    if not (0 <= roi_type < 11):
+#        print(('roireader: ROI type %s not supported' % roi_type))
+#
+#    if roi_type != 7:
+#
+#        print(('roireader: ROI type %s not supported (!= 7)' % roi_type))
+
     top = get16()
     left = get16()
-
+    bottom = get16()
+    right = get16()
     n_coordinates = get16()
+
+    x1 = getfloat() 
+    y1 = getfloat() 
+    x2 = getfloat() 
+    y2 = getfloat()
+    stroke_width = get16()
+    shape_roi_size = get32()
+    stroke_color = get32()
+    fill_color = get32()
     subtype = get16()
     if subtype != 0:
         raise ValueError('roireader: ROI subtype %s not supported (!= 0)' % subtype)
     options = get16()
+    arrow_style = get8()
+    arrow_head_size = get8()
+    rect_arc_size = get16()
+    position = get32()
+    header2offset = get32()
 
     if options & SUB_PIXEL_RESOLUTION:
         getc = getfloat
@@ -485,17 +520,19 @@ def nf_read_roi(fileobj):
     points[:,0] += top
     points -= 1
 
+
     return points
 
 
 
 #%%
-def nf_read_roi_zip(fname,dims):
+def nf_read_roi_zip(fname,dims,return_names = False):
     #todo todocument
 
     with zipfile.ZipFile(fname) as zf:
+        names = zf.namelist()
         coords = [nf_read_roi(zf.open(n))
-                    for n in zf.namelist()]
+                    for n in names]
 
     def tomask(coords):
         mask = np.zeros(dims)
@@ -506,9 +543,10 @@ def nf_read_roi_zip(fname,dims):
         return mask
 
     masks = np.array([tomask(s-1) for s in coords])
-    return masks
-
-
+    if return_names:
+        return masks,names
+    else:
+        return masks
 #%%
 def nf_merge_roi_zip(fnames, idx_to_keep, new_fold):    
 
@@ -534,7 +572,8 @@ def nf_merge_roi_zip(fnames, idx_to_keep, new_fold):
         dirpath = tempfile.mkdtemp()
         folders_rois.append(dirpath)        
         with zipfile.ZipFile(fn) as zf:
-            name_rois = zf.namelist()            
+            name_rois = zf.namelist() 
+            print(len(name_rois))
         zip_ref = zipfile.ZipFile(fn, 'r')
         zip_ref.extractall(dirpath)                
         files_to_keep.append([os.path.join(dirpath,ff) for ff in np.array(name_rois)[idx]])
@@ -747,9 +786,10 @@ def detect_duplicates(file_name,dist_thr = 0.1, FOV = (512,512)):
     
     Returns:
     --------
-        ind         : list of indeces with duplicate entries
-
+        duplicates  : list of indeces with duplicate entries
+        
         ind_keep    : list of kept indeces
+        
     """
     rois = nf_read_roi_zip(file_name,FOV)
     cm = [scipy.ndimage.center_of_mass(mm) for mm in rois]
@@ -757,6 +797,7 @@ def detect_duplicates(file_name,dist_thr = 0.1, FOV = (512,512)):
     D = distance_masks([sp_rois,sp_rois],[cm,cm], 10)[0]
     np.fill_diagonal(D,1)
     indeces = np.where(D<dist_thr)      # pairs of duplicate indeces
+
     ind = list(np.unique(indeces[1][indeces[1]>indeces[0]]))
     ind_keep = list(set(range(D.shape[0]))-set(ind))
     duplicates = list(np.unique(np.concatenate((indeces[0],indeces[1]))))
